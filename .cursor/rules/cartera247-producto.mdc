@@ -1,0 +1,31 @@
+---
+description: Funcionamiento Cartera24/7 — siempre consultar docs/ESTRUCTURA.md
+alwaysApply: true
+---
+
+# Cartera24/7 — contexto obligatorio
+
+Antes de implementar o cambiar comportamiento de negocio, lee y respeta:
+
+- `docs/ESTRUCTURA.md` (fuente de verdad del producto)
+- `AGENTS.md` (entrada rápida)
+
+## Producto
+
+SaaS multi-tenant para prestamistas (Colombia, COP). Crédito **sin plazo fijo**: interés sobre saldo hasta saldar capital.
+
+Ruta de desarrollo: `E:\Desarrollo\cartera247`
+
+## Reglas que no se pueden romper
+
+1. Asignación de pago: **interés → mora (si se cobra) → capital**.
+2. Excedente baja capital solo tras cubrir el interés aplicable a la fecha; si hay varios meses vencidos, primero se cubren esos intereses.
+3. No abrir ciclo/mes futuro solo porque el interés del ciclo actual quedó pagado el mismo día.
+4. Mora: opcional al pagar; valor acordado; **no volver a cobrar días ya cobrados**.
+5. UI: **Prestado** / **Por cobrar**; no exponer “periodos/plan de cuotas” en detalle del crédito.
+6. Dinero en enteros COP con `roundCop` / `Math.round`.
+7. La lógica vive en la API (`loan-cycle.util`, `money.util`, `payments.service`, `loans.service`); la web solo presenta.
+
+## Si cambias una regla de negocio
+
+Actualiza `docs/ESTRUCTURA.md` en el mismo cambio.

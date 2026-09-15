@@ -1,0 +1,695 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  active
+  inactive
+  suspended
+}
+
+enum TenantStatus {
+  active
+  inactive
+  suspended
+}
+
+enum TenantRole {
+  owner
+  admin
+  operator
+  readonly
+}
+
+enum BorrowerStatus {
+  active
+  delinquent
+  blocked
+  inactive
+}
+
+enum FieldType {
+  text
+  number
+  date
+  select
+  boolean
+}
+
+enum InterestMethod {
+  interest_first_monthly
+  fixed_installment
+  daily_accrual
+}
+
+enum PaymentFrequency {
+  daily
+  weekly
+  biweekly
+  monthly
+}
+
+enum LoanStatus {
+  active
+  paid_off
+  defaulted
+  cancelled
+}
+
+enum InstallmentStatus {
+  pending
+  partial
+  paid
+  overdue
+}
+
+enum PaymentStatus {
+  pending
+  accepted
+  rejected
+  voided
+}
+
+enum PaymentMethod {
+  cash
+  transfer
+  other
+}
+
+enum OverdueStatus {
+  pending_review
+  approved
+  waived
+  applied
+}
+
+enum AlertType {
+  overdue
+  payment_pending
+  loan_maturity
+  system
+}
+
+enum AuditAction {
+  create
+  update
+  delete
+  void
+  approve
+  waive
+  impersonate
+}
+
+enum NotificationChannel {
+  push
+  sms
+  email
+  in_app
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+  read
+}
+
+// ─── Plataforma ──────────────────────────────────────────────────────────────
+
+model PlatformAdmin {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  supportSessions  TenantSupportSession[]
+
+  @@map("platform_admins")
+}
+
+model Tenant {
+  id           String       @id @default(uuid())
+  name         String
+  legalName    String?      @map("legal_name")
+  nit          String?
+  email        String
+  phone        String?
+  address      String?
+  status       TenantStatus @default(active)
+  settings     Json?
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  memberships          TenantMembership[]
+  modules              TenantModule[]
+  supportSessions      TenantSupportSession[]
+  borrowers            Borrower[]
+  borrowerFieldDefs    BorrowerFieldDefinition[]
+  loanProducts         LoanProduct[]
+  loans                Loan[]
+  payments             Payment[]
+  alerts               Alert[]
+  auditLogs            AuditLog[]
+  notifications        Notification[]
+  collectorAssignments CollectorAssignment[]
+
+  @@map("tenants")
+}
+
+model Module {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  isCore      Boolean @default(false) @map("is_core")
+
+  tenantModules TenantModule[]
+
+  @@map("modules")
+}
+
+model TenantModule {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  moduleId    String   @map("module_id")
+  isActive    Boolean  @default(true) @map("is_active")
+  settings    Json?
+  activatedAt DateTime @default(now()) @map("activated_at")
+  activatedBy String?  @map("activated_by")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, moduleId])
+  @@map("tenant_modules")
+}
+
+model TenantSupportSession {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  adminId   String    @map("admin_id")
+  reason    String
+  startedAt DateTime  @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+  ipAddress String?   @map("ip_address")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  admin  PlatformAdmin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_support_sessions")
+}
+
+// ─── Identidad ───────────────────────────────────────────────────────────────
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  firstName    String     @map("first_name")
+  lastName     String     @map("last_name")
+  phone        String?
+  status       UserStatus @default(active)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  platformAdmin    PlatformAdmin?
+  tenantMemberships TenantMembership[]
+  borrowerAccount  BorrowerAccount?
+  paymentsRecorded Payment[]          @relation("PaymentRecordedBy")
+  lateFeeDecisions LateFeeDecision[]
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+model TenantMembership {
+  id        String     @id @default(uuid())
+  userId    String     @map("user_id")
+  tenantId  String     @map("tenant_id")
+  role      TenantRole @default(operator)
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@map("tenant_memberships")
+}
+
+model Permission {
+  id          String @id @default(uuid())
+  code        String @unique
+  description String?
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  role         TenantRole
+  permissionId String     @map("permission_id")
+
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([role, permissionId])
+  @@map("role_permissions")
+}
+
+model BorrowerAccount {
+  id         String   @id @default(uuid())
+  userId     String   @unique @map("user_id")
+  borrowerId String   @unique @map("borrower_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  borrower Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@map("borrower_accounts")
+}
+
+// ─── Prestatarios ────────────────────────────────────────────────────────────
+
+model Borrower {
+  id           String         @id @default(uuid())
+  tenantId     String         @map("tenant_id")
+  documentType String         @default("CC") @map("document_type")
+  documentNum  String         @map("document_num")
+  firstName    String         @map("first_name")
+  lastName     String         @map("last_name")
+  email        String?
+  phone        String?
+  address      String?        @map("address") // legacy, usar residenceAddress
+  residenceAddress String?  @map("residence_address")
+  city         String?
+  neighborhood String?        @map("neighborhood")
+  workCompanyName String?     @map("work_company_name")
+  workContactName String?     @map("work_contact_name")
+  workAddress     String?     @map("work_address")
+  workPhone       String?     @map("work_phone")
+  status       BorrowerStatus @default(active)
+  customData   Json?          @map("custom_data")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  tenant               Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account              BorrowerAccount?
+  fieldValues          BorrowerFieldValue[]
+  personalReferences   BorrowerReference[]
+  phones               BorrowerPhone[]
+  workPhones           BorrowerWorkPhone[]
+  workAddresses        BorrowerWorkAddress[]
+  loans                Loan[]
+  collectorAssignments CollectorAssignment[]
+
+  @@unique([tenantId, documentNum])
+  @@index([tenantId, status])
+  @@map("borrowers")
+}
+
+model BorrowerFieldDefinition {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  name      String
+  label     String
+  fieldType FieldType @map("field_type")
+  required  Boolean   @default(false)
+  options   Json?
+  sortOrder Int       @default(0) @map("sort_order")
+
+  tenant Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  values BorrowerFieldValue[]
+
+  @@unique([tenantId, name])
+  @@map("borrower_field_definitions")
+}
+
+model BorrowerFieldValue {
+  id           String @id @default(uuid())
+  borrowerId   String @map("borrower_id")
+  definitionId String @map("definition_id")
+  value        String
+
+  borrower   Borrower                @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  definition BorrowerFieldDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+
+  @@unique([borrowerId, definitionId])
+  @@map("borrower_field_values")
+}
+
+model BorrowerReference {
+  id           String  @id @default(uuid())
+  borrowerId   String  @map("borrower_id")
+  fullName     String  @map("full_name")
+  phone        String
+  relationship String
+  address      String?
+  sortOrder    Int     @default(0) @map("sort_order")
+
+  borrower Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@index([borrowerId])
+  @@map("borrower_references")
+}
+
+model BorrowerPhone {
+  id         String  @id @default(uuid())
+  borrowerId String  @map("borrower_id")
+  phone      String
+  label      String  @default("Personal")
+  isPrimary  Boolean @default(false) @map("is_primary")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  borrower Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@index([borrowerId])
+  @@map("borrower_phones")
+}
+
+model BorrowerWorkPhone {
+  id         String  @id @default(uuid())
+  borrowerId String  @map("borrower_id")
+  phone      String
+  label      String  @default("Oficina")
+  isPrimary  Boolean @default(false) @map("is_primary")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  borrower Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@index([borrowerId])
+  @@map("borrower_work_phones")
+}
+
+model BorrowerWorkAddress {
+  id         String  @id @default(uuid())
+  borrowerId String  @map("borrower_id")
+  address    String
+  label      String  @default("Sede principal")
+  isPrimary  Boolean @default(false) @map("is_primary")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  borrower Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@index([borrowerId])
+  @@map("borrower_work_addresses")
+}
+
+// ─── Productos de crédito ────────────────────────────────────────────────────
+
+model LoanProduct {
+  id               String           @id @default(uuid())
+  tenantId         String           @map("tenant_id")
+  name             String
+  interestMethod   InterestMethod   @default(interest_first_monthly) @map("interest_method")
+  defaultRate      Decimal          @map("default_rate")
+  paymentFrequency PaymentFrequency @default(monthly) @map("payment_frequency")
+  isActive         Boolean          @default(true) @map("is_active")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  tenant    Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lateRules LoanProductLateFeeRule[]
+  loans     Loan[]
+
+  @@index([tenantId])
+  @@map("loan_products")
+}
+
+model LoanProductLateFeeRule {
+  id              String  @id @default(uuid())
+  productId       String  @map("product_id")
+  graceDays       Int     @default(0) @map("grace_days")
+  dailyRate       Decimal @default(0) @map("daily_rate")
+  fixedPenalty    Int     @default(0) @map("fixed_penalty")
+  requiresApproval Boolean @default(true) @map("requires_approval")
+
+  product LoanProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("loan_product_late_fee_rules")
+}
+
+// ─── Préstamos ───────────────────────────────────────────────────────────────
+
+model Loan {
+  id               String     @id @default(uuid())
+  tenantId         String     @map("tenant_id")
+  borrowerId       String     @map("borrower_id")
+  productId        String     @map("product_id")
+  principalAmount  Int        @map("principal_amount")
+  currentBalance   Int        @map("current_balance")
+  interestRate     Decimal    @map("interest_rate")
+  paymentFrequency PaymentFrequency @default(monthly) @map("payment_frequency")
+  status           LoanStatus @default(active)
+  startDate        DateTime   @map("start_date")
+  endDate          DateTime?  @map("end_date")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  borrower     Borrower            @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  product      LoanProduct         @relation(fields: [productId], references: [id])
+  term         LoanTerm?
+  installments LoanInstallment[]
+  balanceEvents LoanBalanceEvent[]
+  payments     Payment[]
+
+  @@index([tenantId, status])
+  @@index([borrowerId])
+  @@map("loans")
+}
+
+model LoanTerm {
+  id               String           @id @default(uuid())
+  loanId           String           @unique @map("loan_id")
+  principalAmount  Int              @map("principal_amount")
+  interestRate     Decimal          @map("interest_rate")
+  interestMethod   InterestMethod   @map("interest_method")
+  paymentFrequency PaymentFrequency @map("payment_frequency")
+  lateFeeRules     Json?            @map("late_fee_rules")
+  frozenAt         DateTime         @default(now()) @map("frozen_at")
+
+  loan Loan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@map("loan_terms")
+}
+
+model LoanInstallment {
+  id                 String            @id @default(uuid())
+  loanId             String            @map("loan_id")
+  installmentNumber  Int               @map("installment_number")
+  dueDate            DateTime          @map("due_date")
+  expectedInterest   Int               @map("expected_interest")
+  expectedPrincipal  Int               @default(0) @map("expected_principal")
+  paidInterest       Int               @default(0) @map("paid_interest")
+  paidPrincipal      Int               @default(0) @map("paid_principal")
+  status             InstallmentStatus @default(pending)
+
+  loan           Loan            @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  overdueEvents  OverdueEvent[]
+  allocations    PaymentAllocation[]
+
+  @@index([loanId, dueDate])
+  @@map("loan_installments")
+}
+
+model LoanBalanceEvent {
+  id          String   @id @default(uuid())
+  loanId      String   @map("loan_id")
+  eventType   String   @map("event_type")
+  amount      Int
+  balanceAfter Int     @map("balance_after")
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  loan Loan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([loanId, createdAt])
+  @@map("loan_balance_events")
+}
+
+// ─── Pagos ───────────────────────────────────────────────────────────────────
+
+model Payment {
+  id            String        @id @default(uuid())
+  tenantId      String        @map("tenant_id")
+  loanId        String        @map("loan_id")
+  amount        Int
+  paymentDate   DateTime      @map("payment_date")
+  method        PaymentMethod @default(cash)
+  status        PaymentStatus @default(pending)
+  notes         String?
+  recordedById  String        @map("recorded_by_id")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  loan        Loan                @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  recordedBy  User                @relation("PaymentRecordedBy", fields: [recordedById], references: [id])
+  allocations PaymentAllocation[]
+  receipts    PaymentReceipt[]
+
+  @@index([tenantId, paymentDate])
+  @@index([loanId])
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id            String  @id @default(uuid())
+  paymentId     String  @map("payment_id")
+  installmentId String? @map("installment_id")
+  toInterest    Int     @default(0) @map("to_interest")
+  toLateFee     Int     @default(0) @map("to_late_fee")
+  toPrincipal   Int     @default(0) @map("to_principal")
+
+  payment     Payment          @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  installment LoanInstallment? @relation(fields: [installmentId], references: [id])
+
+  @@map("payment_allocations")
+}
+
+model PaymentReceipt {
+  id        String   @id @default(uuid())
+  paymentId String   @map("payment_id")
+  fileUrl   String   @map("file_url")
+  fileName  String   @map("file_name")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@map("payment_receipts")
+}
+
+// ─── Mora ────────────────────────────────────────────────────────────────────
+
+model OverdueEvent {
+  id              String        @id @default(uuid())
+  installmentId   String        @map("installment_id")
+  daysOverdue     Int           @map("days_overdue")
+  calculatedFee   Int           @map("calculated_fee")
+  status          OverdueStatus @default(pending_review)
+  detectedAt      DateTime      @default(now()) @map("detected_at")
+
+  installment LoanInstallment  @relation(fields: [installmentId], references: [id], onDelete: Cascade)
+  decision    LateFeeDecision?
+
+  @@map("overdue_events")
+}
+
+model LateFeeDecision {
+  id             String   @id @default(uuid())
+  overdueEventId String   @unique @map("overdue_event_id")
+  decidedById    String   @map("decided_by_id")
+  decision       String
+  reason         String?
+  decidedAt      DateTime @default(now()) @map("decided_at")
+
+  overdueEvent OverdueEvent @relation(fields: [overdueEventId], references: [id], onDelete: Cascade)
+  decidedBy    User         @relation(fields: [decidedById], references: [id])
+
+  @@map("late_fee_decisions")
+}
+
+model Alert {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  type      AlertType
+  title     String
+  message   String
+  entityType String?  @map("entity_type")
+  entityId  String?   @map("entity_id")
+  isRead    Boolean   @default(false) @map("is_read")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, isRead])
+  @@map("alerts")
+}
+
+// ─── Auditoría ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  tenantId   String?     @map("tenant_id")
+  userId     String?     @map("user_id")
+  entityType String      @map("entity_type")
+  entityId   String      @map("entity_id")
+  action     AuditAction
+  oldValues  Json?       @map("old_values")
+  newValues  Json?       @map("new_values")
+  ipAddress  String?     @map("ip_address")
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ─── Notificaciones (esquema, implementación futura) ─────────────────────────
+
+model NotificationTemplate {
+  id      String              @id @default(uuid())
+  code    String              @unique
+  channel NotificationChannel
+  subject String?
+  body    String
+
+  notifications Notification[]
+
+  @@map("notification_templates")
+}
+
+model Notification {
+  id         String             @id @default(uuid())
+  tenantId   String             @map("tenant_id")
+  templateId String?            @map("template_id")
+  recipientId String            @map("recipient_id")
+  channel    NotificationChannel
+  status     NotificationStatus @default(pending)
+  payload    Json?
+  sentAt     DateTime?          @map("sent_at")
+  createdAt  DateTime           @default(now()) @map("created_at")
+
+  tenant   Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template NotificationTemplate? @relation(fields: [templateId], references: [id])
+
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id        String              @id @default(uuid())
+  userId    String              @map("user_id")
+  channel   NotificationChannel
+  enabled   Boolean             @default(true)
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  @@unique([userId, channel])
+  @@map("notification_preferences")
+}
+
+// ─── Cobradores (futuro) ─────────────────────────────────────────────────────
+
+model CollectorAssignment {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  borrowerId  String   @map("borrower_id")
+  collectorId String   @map("collector_id")
+  assignedAt  DateTime @default(now()) @map("assigned_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  borrower Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@unique([borrowerId, collectorId])
+  @@map("collector_assignments")
+}

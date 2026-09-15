@@ -1,0 +1,23 @@
+{
+  "name": "cartera247",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cartera24/7 — Plataforma SaaS multi-tenant para prestamistas en Colombia",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace=@cartera247/api",
+    "dev:web-admin": "npm run dev --workspace=@cartera247/web-admin",
+    "dev:web-tenant": "npm run dev --workspace=@cartera247/web-tenant",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run prisma:generate --workspace=@cartera247/api",
+    "db:migrate": "npm run prisma:migrate --workspace=@cartera247/api",
+    "db:seed": "npm run prisma:seed --workspace=@cartera247/api"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

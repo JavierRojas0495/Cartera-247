@@ -1,0 +1,15 @@
+---
+description: Convenciones UI panel prestamista (web-tenant)
+globs: apps/web-tenant/**/*.{tsx,ts,css}
+alwaysApply: false
+---
+
+# Web tenant — UI prestamista
+
+- Español en toda la UI.
+- Préstamos: columnas **Prestado** y **Por cobrar**.
+- Detalle de crédito: historial de pagos + mora cobrada; sin sección de “periodos de interés”.
+- Días de atraso vs **fecha de corte** del mes (`daysLateOnPayment`), no vs cuotas internas viejas.
+- Pagos: mostrar preview interés/mora/capital; si hay mora cobrable, checkbox + tasa diaria visible.
+- Diálogos con `app-dialog` (`alert` / `confirm` + `content` ReactNode).
+- Formatters en `api.ts` (`formatCop`, `formatMonthlyRate`, `formatDailyLateRate`).

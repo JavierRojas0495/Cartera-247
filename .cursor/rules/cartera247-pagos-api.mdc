@@ -1,0 +1,14 @@
+---
+description: Reglas de pagos, interés y mora en la API
+globs: apps/api/src/modules/payments/**/*.ts,apps/api/src/modules/loans/**/*.ts,apps/api/src/common/utils/**/*.ts
+alwaysApply: false
+---
+
+# API — pagos e interés
+
+- Usa `parseDateOnly` / `expectedInstallmentCount` / `chargeableLateDays` de `loan-cycle.util.ts`.
+- Usa `allocatePayment` / `calculateMonthlyInterest` / `calculateLateFee` de `money.util.ts`.
+- `ensureAccruedInstallments` solo crea ciclos que ya aplican a la fecha del pago; no abras el siguiente mes al liquidar el interés.
+- `chargeLateFee` + `lateFeeAmount` son opcionales; rechaza cobro si `canChargeLateFee` es false.
+- Al aplicar mora (`toLateFee > 0`), registra `OverdueEvent` con status `applied` y no reaplicques el fijo en el mismo episodio.
+- Tests: mantén/extiende `*.spec.ts` junto a los utils cuando cambies fórmulas.
