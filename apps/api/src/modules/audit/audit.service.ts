@@ -40,4 +40,13 @@ export class AuditService {
       include: { user: { select: { email: true, firstName: true, lastName: true } } },
     });
   }
+
+  async findByEntity(tenantId: string, entityType: string, entityId: string, limit = 100) {
+    return this.prisma.auditLog.findMany({
+      where: { tenantId, entityType, entityId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { user: { select: { email: true, firstName: true, lastName: true } } },
+    });
+  }
 }

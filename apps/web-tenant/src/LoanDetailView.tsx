@@ -1,4 +1,4 @@
-import { formatCop, formatDate, formatInterestRate, formatPaymentFrequency, daysLateOnPayment, loanPendingInterest, type PaymentFrequency } from './api';
+import { formatCop, formatDate, formatInterestRate, formatPaymentFrequency, formatLoanCode, daysLateOnPayment, loanPendingInterest, buildInterestCycleHistory, type PaymentFrequency } from './api';
 
 type Props = {
   loan: any;
@@ -30,6 +30,44 @@ const overdueStatusLabel: Record<string, string> = {
   waived: 'Condonada',
   applied: 'Aplicada',
 };
+
+const changeFieldLabel: Record<string, string> = {
+  principalAmount: 'Prestado',
+  currentBalance: 'Por cobrar',
+  interestRate: 'Tasa',
+  paymentFrequency: 'Frecuencia de cobro',
+  startDate: 'Fecha de desembolso',
+  borrowerId: 'Prestatario',
+  productId: 'Producto',
+};
+
+function formatChangeValue(field: string, value: unknown, frequency?: string | null): string {
+  if (value == null || value === '') return '—';
+  if (field === 'principalAmount' || field === 'currentBalance') {
+    return formatCop(Number(value));
+  }
+  if (field === 'interestRate') {
+    return formatInterestRate(Number(value), frequency as PaymentFrequency | undefined);
+  }
+  if (field === 'paymentFrequency') {
+    return formatPaymentFrequency(String(value));
+  }
+  if (field === 'startDate') {
+    return formatDate(String(value));
+  }
+  return String(value);
+}
+
+function formatDateTime(value?: string | Date | null) {
+  if (!value) return '—';
+  return new Date(value).toLocaleString('es-CO', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 function loanStatusBadge(status: string) {
   if (status === 'paid_off') return 'active';
@@ -99,6 +137,8 @@ function MoraCell({ daysLate, charged }: { daysLate: number; charged: boolean })
 export function LoanDetailView({ loan }: Props) {
   const borrowerName = `${loan.borrower?.firstName ?? ''} ${loan.borrower?.lastName ?? ''}`.trim();
   const pendingInterest = loanPendingInterest(loan);
+  const cycleHistory = buildInterestCycleHistory(loan);
+  const openCyclesCount = cycleHistory.filter((c) => c.remaining > 0).length;
   const history = buildPaymentHistory(loan);
   const overdueEvents = (loan.installments ?? []).flatMap((installment: any) =>
     (installment.overdueEvents ?? [])
@@ -120,7 +160,7 @@ export function LoanDetailView({ loan }: Props) {
     <div className="loan-detail">
       <div className="card loan-detail-hero">
         <div>
-          <p className="borrower-detail-kicker">Crédito</p>
+          <p className="borrower-detail-kicker">Crédito {formatLoanCode(loan)}</p>
           <h2 className="borrower-detail-name">{borrowerName || 'Prestatario'}</h2>
           <p className="borrower-detail-doc">
             {loan.borrower?.documentType || 'CC'} {loan.borrower?.documentNum}
@@ -151,7 +191,11 @@ export function LoanDetailView({ loan }: Props) {
           <dd className={pendingInterest > 0 ? 'loan-interest-due' : 'loan-interest-paid'}>
             {formatCop(pendingInterest)}
           </dd>
-          <p className="loan-stat-hint">Sobre el saldo actual</p>
+          <p className="loan-stat-hint">
+            {openCyclesCount > 1
+              ? `Suma de ${openCyclesCount} cortes pendientes`
+              : 'Sobre el saldo actual'}
+          </p>
         </div>
         <div className="detail-field">
           <dt>Pagado a la fecha</dt>
@@ -164,8 +208,70 @@ export function LoanDetailView({ loan }: Props) {
 
       <section className="card loan-detail-section">
         <div className="loan-section-head">
-          <h3>Historial de pagos</h3>
-          <p>Cada abono: cómo se aplicó y cuántos días de atraso tenía respecto a la fecha de corte de ese mes (el mismo día del desembolso).</p>
+          <h3>Historial de cortes</h3>
+          <p>
+            Cortes del crédito <strong>{formatLoanCode(loan)}</strong> según cobro{' '}
+            {formatPaymentFrequency(loan.paymentFrequency).toLowerCase()}:
+            solo hasta hoy. Cada fila tiene su interés y sus propios días de mora.
+            El día del corte aún no cuenta mora.
+          </p>
+        </div>
+        {cycleHistory.length === 0 ? (
+          <p className="detail-empty">Aún no hay cortes vencidos o en curso en este crédito.</p>
+        ) : (
+          <div className="table-scroll">
+            <table className="loans-table responsive-table">
+              <thead>
+                <tr>
+                  <th>Fecha de corte</th>
+                  <th>Interés del ciclo</th>
+                  <th>Ya pagado</th>
+                  <th>Por cobrar</th>
+                  <th>Días de mora</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cycleHistory.map((cycle) => (
+                  <tr key={cycle.id}>
+                    <td data-label="Corte">{formatDate(cycle.dueDate)}</td>
+                    <td data-label="Interés ciclo">{formatCop(cycle.expectedInterest)}</td>
+                    <td data-label="Pagado">{formatCop(cycle.paidInterest)}</td>
+                    <td data-label="Por cobrar">
+                      <span className={cycle.remaining > 0 ? 'loan-interest-due' : 'loan-interest-paid'}>
+                        {formatCop(cycle.remaining)}
+                      </span>
+                    </td>
+                    <td data-label="Días mora">
+                      {cycle.daysLate > 0 ? (
+                        <span className="loan-late">
+                          {cycle.daysLate} día{cycle.daysLate === 1 ? '' : 's'}
+                        </span>
+                      ) : (
+                        <span className="loan-on-time">0</span>
+                      )}
+                    </td>
+                    <td data-label="Estado">
+                      <span
+                        className={`badge badge-${
+                          cycle.status === 'overdue' ? 'overdue' : 'active'
+                        }`}
+                      >
+                        {cycle.statusLabel}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card loan-detail-section">
+        <div className="loan-section-head">
+          <h3>Abonos registrados</h3>
+          <p>Pagos del crédito <strong>{formatLoanCode(loan)}</strong>: cómo se aplicaron a interés, mora y capital.</p>
         </div>
         {history.length === 0 ? (
           <p className="detail-empty">Aún no hay pagos registrados en este crédito.</p>
@@ -210,6 +316,45 @@ export function LoanDetailView({ loan }: Props) {
           </div>
         )}
       </section>
+
+      {(loan.changeHistory ?? []).length > 0 && (
+        <section className="card loan-detail-section">
+          <div className="loan-section-head">
+            <h3>Historial de modificaciones</h3>
+            <p>Registro de cambios del crédito: qué se editó, cuándo, valor anterior y valor nuevo.</p>
+          </div>
+          <div className="table-scroll">
+            <table className="loans-table responsive-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Quién</th>
+                  <th>Campo</th>
+                  <th>Valor anterior</th>
+                  <th>Valor nuevo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(loan.changeHistory as any[]).flatMap((entry) =>
+                  entry.changes.map((change: any, index: number) => (
+                    <tr key={`${entry.id}-${change.field}-${index}`}>
+                      <td data-label="Fecha">{formatDateTime(entry.createdAt)}</td>
+                      <td data-label="Quién">{entry.user?.name || entry.user?.email || '—'}</td>
+                      <td data-label="Campo">{changeFieldLabel[change.field] ?? change.field}</td>
+                      <td data-label="Anterior">
+                        {formatChangeValue(change.field, change.previousValue, loan.paymentFrequency)}
+                      </td>
+                      <td data-label="Nuevo">
+                        {formatChangeValue(change.field, change.newValue, loan.paymentFrequency)}
+                      </td>
+                    </tr>
+                  )),
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       <section className="card loan-detail-section">
         <div className="loan-section-head">

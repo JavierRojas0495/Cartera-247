@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { InstallmentSchedulerService } from '../loans/installment-scheduler.service';
 import { calculateLateFee } from '../../common/utils/money.util';
 
 @Injectable()
@@ -9,6 +10,7 @@ export class OverdueService {
   constructor(
     private prisma: PrismaService,
     private audit: AuditService,
+    private installments: InstallmentSchedulerService,
   ) {}
 
   findAll(tenantId: string) {
@@ -22,6 +24,7 @@ export class OverdueService {
             loan: {
               select: {
                 id: true,
+                code: true,
                 borrower: { select: { firstName: true, lastName: true } },
               },
             },
@@ -33,9 +36,37 @@ export class OverdueService {
     });
   }
 
-  getAlerts(tenantId: string) {
+  /** Refresca alertas (1 por crédito en mora) y lista solo esas. */
+  async getAlerts(tenantId: string) {
+    const activeLoans = await this.prisma.loan.findMany({
+      where: { tenantId, status: 'active', currentBalance: { gt: 0 } },
+      select: { id: true },
+    });
+
+    for (const loan of activeLoans) {
+      await this.installments.ensureAccruedInstallmentsAndAlerts(loan.id, new Date());
+    }
+
+    // Descarta alertas sueltas por ciclo u otros tipos viejos.
+    await this.prisma.alert.updateMany({
+      where: {
+        tenantId,
+        isRead: false,
+        OR: [
+          { type: { not: 'overdue' } },
+          { entityType: { not: 'loan' } },
+        ],
+      },
+      data: { isRead: true },
+    });
+
     return this.prisma.alert.findMany({
-      where: { tenantId, isRead: false },
+      where: {
+        tenantId,
+        isRead: false,
+        type: 'overdue',
+        entityType: 'loan',
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -59,6 +90,8 @@ export class OverdueService {
         },
       },
     });
+
+    const touchedLoanIds = new Set<string>();
 
     for (const installment of overdueInstallments) {
       const existing = await this.prisma.overdueEvent.findFirst({
@@ -96,18 +129,13 @@ export class OverdueService {
             status: 'pending_review',
           },
         });
-
-        await tx.alert.create({
-          data: {
-            tenantId: installment.loan.tenantId,
-            type: 'overdue',
-            title: 'Cuota vencida',
-            message: `Cuota #${installment.installmentNumber} vencida hace ${effectiveDays} días`,
-            entityType: 'loan_installment',
-            entityId: installment.id,
-          },
-        });
       });
+
+      touchedLoanIds.add(installment.loanId);
+    }
+
+    for (const loanId of touchedLoanIds) {
+      await this.installments.syncCollectionAlerts(loanId, today);
     }
   }
 

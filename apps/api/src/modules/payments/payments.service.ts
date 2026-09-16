@@ -27,7 +27,9 @@ export class PaymentsService {
     private loansService: LoansService,
   ) {}
 
-  findAll(tenantId: string) {
+  async findAll(tenantId: string) {
+    await this.loansService.ensureLoanCodes(tenantId);
+
     return this.prisma.payment.findMany({
       where: { tenantId },
       orderBy: { paymentDate: 'desc' },
@@ -35,6 +37,8 @@ export class PaymentsService {
         loan: {
           select: {
             id: true,
+            code: true,
+            currentBalance: true,
             borrower: { select: { firstName: true, lastName: true } },
           },
         },
@@ -60,7 +64,7 @@ export class PaymentsService {
       },
       orderBy: { paymentDate: 'desc' },
       include: {
-        loan: { select: { id: true } },
+        loan: { select: { id: true, code: true } },
         allocations: true,
       },
     });
@@ -224,11 +228,13 @@ export class PaymentsService {
       }
 
       const newBalance = loan.currentBalance - allocationResult.toPrincipal;
+      const paidOff = newBalance <= 0;
       await tx.loan.update({
         where: { id: loan.id },
         data: {
           currentBalance: newBalance,
-          status: newBalance <= 0 ? 'paid_off' : 'active',
+          status: paidOff ? 'paid_off' : 'active',
+          endDate: paidOff ? paymentDate : null,
         },
       });
 
@@ -318,6 +324,7 @@ export class PaymentsService {
           data: {
             currentBalance: { increment: allocation.toPrincipal },
             status: 'active',
+            endDate: null,
           },
         });
       }

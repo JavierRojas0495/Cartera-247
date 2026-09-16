@@ -171,8 +171,15 @@ Código: `chargeableLateDays`, `lastMoraSettledThrough`, UI pagos en `web-tenant
 | Evitar | Preferir |
 |---|---|
 | Monto / Saldo capital | **Prestado** / **Por cobrar** |
-| Interés del periodo / Periodos de interés | **Interés pendiente** (y detalle de pagos) |
+| Interés del periodo / Periodos de interés | **Interés pendiente** (suma de todos los ciclos abiertos no pagados) |
 | Cuota #N como plan | Solo historial de pagos + mora cobrada |
+| Un solo “días de mora” sumando todos los meses | **Historial de cortes**: una fila por día/15 días/mes ya llegado; mora solo de ese corte; el día del corte = 0; no aparece el periodo futuro |
+| “En mora” = N ciclos internos | **Créditos en mora** = préstamos activos con corte vencido |
+
+Listado de préstamos (web):
+
+- Pestaña **En cartera**: solo créditos `active` (aún deben capital). Sin columnas **Por cobrar** ni **Estado** (el detalle sí muestra Por cobrar).
+- Pestaña **Saldados**: créditos `paid_off` (consulta / historial). Al saldar el capital el API marca `paid_off`, guarda `endDate` y deja de aparecer en cartera.
 
 ---
 
@@ -181,9 +188,22 @@ Código: `chargeableLateDays`, `lastMoraSettledThrough`, UI pagos en `web-tenant
 ### Crear préstamo
 
 1. Elegir prestatario + monto + tasa + frecuencia de cobro (diario / cada 15 días / mensual).
-2. Desembolso → `principalAmount = currentBalance`.
-3. Se crea `LoanTerm` + 1.er ciclo de interés (tasa × saldo del periodo) + evento desembolso.
+2. Desembolso → `principalAmount = currentBalance`. La **fecha de desembolso** puede ser anterior al día en que se registra el crédito.
+3. Se crea `LoanTerm` + ciclos de interés que **ya aplican a hoy** según frecuencia (no solo el 1.er ciclo) + evento desembolso.
    El producto del tenant se asigna en segundo plano solo para reglas de mora.
+4. Si ya hay cortes alcanzados o pasados con interés pendiente → se generan **alertas** (`Interés por cobrar` / `Crédito con atraso`) con el nombre del prestatario.
+
+Ejemplo: se registra hoy un crédito diario desembolsado hace 5 días → se abren los ciclos vencidos y aparece alerta de cobro de inmediato (no hay que esperar el cron de las 6:00).
+
+### Modificar préstamo
+
+1. Solo créditos **activos**.
+2. Campos editables: **valor prestado**, tasa, frecuencia de cobro, fecha de desembolso.
+3. Si cambia el valor prestado, **Por cobrar** se ajusta en la misma diferencia (no borra abonos a capital). No puede quedar negativo.
+4. Obligatorio confirmar con **contraseña** del usuario (`confirmPassword` en `PATCH /loans/:id`).
+5. Tras guardar: se recalcula interés de ciclos abiertos y se regeneran alertas si aplica.
+6. Cada cambio queda en auditoría y se muestra en el detalle del crédito (**Historial de modificaciones**: fecha, usuario, campo, valor anterior, valor nuevo).
+7. Cada crédito tiene un **código visible** (`CR-AAMMDD-XXXX`) para identificar pagos y cortes sin confundir créditos del mismo prestatario.
 
 ### Registrar pago
 

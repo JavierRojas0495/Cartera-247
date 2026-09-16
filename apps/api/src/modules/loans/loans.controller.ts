@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Param,
   Body,
   Query,
@@ -9,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { LoansService } from './loans.service';
-import { CreateLoanDto } from './dto/loan.dto';
+import { CreateLoanDto, UpdateLoanDto } from './dto/loan.dto';
 import { CurrentUser, ClientIp, JwtPayload } from '../../common/decorators/auth.decorators';
 
 @ApiTags('loans')
@@ -49,5 +50,15 @@ export class LoansController {
     @ClientIp() ip: string,
   ) {
     return this.loansService.create(this.requireTenant(user), dto, user.sub, ip);
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateLoanDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.loansService.update(this.requireTenant(user), id, dto, user.sub, ip);
   }
 }

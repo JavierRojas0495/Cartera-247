@@ -49,6 +49,13 @@ export function isAuthenticated() {
   return !!localStorage.getItem('accessToken') && !!getUser();
 }
 
+export function formatLoanCode(loan?: { code?: string | null; id?: string } | null) {
+  if (!loan) return '—';
+  if (loan.code && String(loan.code).trim()) return String(loan.code).trim();
+  if (loan.id) return `CR-${loan.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  return '—';
+}
+
 export function formatCop(amount: number) {
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
@@ -158,11 +165,152 @@ export function loanOpenInstallment(loan: {
 }
 
 export function loanPendingInterest(loan: {
-  installments?: Array<{ expectedInterest: number; paidInterest: number }>;
+  installments?: Array<{
+    expectedInterest: number;
+    paidInterest: number;
+    status?: string;
+  }>;
+  pendingInterest?: number;
 }) {
-  const installment = loanOpenInstallment(loan);
-  if (!installment) return 0;
-  return Math.max(0, installment.expectedInterest - installment.paidInterest);
+  if (typeof loan.pendingInterest === 'number' && Number.isFinite(loan.pendingInterest)) {
+    return Math.max(0, Math.round(loan.pendingInterest));
+  }
+  const items = loan.installments ?? [];
+  return items.reduce((sum, item) => {
+    if (item.status && !['pending', 'partial', 'overdue'].includes(item.status)) {
+      return sum;
+    }
+    return sum + Math.max(0, Number(item.expectedInterest) - Number(item.paidInterest));
+  }, 0);
+}
+
+/** Situación de cobranza del crédito (no confundir con status del préstamo). */
+export function loanCollectionStatus(loan: {
+  status?: string;
+  installments?: Array<{
+    status?: string;
+    dueDate?: string | Date;
+    expectedInterest?: number;
+    paidInterest?: number;
+  }>;
+}): { key: 'current' | 'overdue' | 'settled' | 'closed'; label: string; badge: string } {
+  if (loan.status === 'paid_off') {
+    return { key: 'settled', label: 'Saldado', badge: 'active' };
+  }
+  if (loan.status && loan.status !== 'active') {
+    return { key: 'closed', label: 'Cerrado', badge: 'inactive' };
+  }
+
+  const today = parseDateOnly(new Date());
+  const hasOverdue = (loan.installments ?? []).some((item) => {
+    if (item.status === 'overdue') return true;
+    if (!['pending', 'partial'].includes(item.status ?? '')) return false;
+    const remaining = Math.max(0, Number(item.expectedInterest ?? 0) - Number(item.paidInterest ?? 0));
+    if (remaining <= 0 || !item.dueDate) return false;
+    return parseDateOnly(item.dueDate).getTime() < today.getTime();
+  });
+
+  if (hasOverdue) {
+    return { key: 'overdue', label: 'En mora', badge: 'overdue' };
+  }
+  return { key: 'current', label: 'Al día', badge: 'active' };
+}
+
+/** Días de atraso de UN corte (solo después de la fecha de corte; el día del corte = 0). */
+export function daysLateForDueDate(dueDate: string | Date, asOf: Date = new Date()) {
+  const due = parseDateOnly(dueDate);
+  const today = parseDateOnly(asOf);
+  const diff = Math.floor((today.getTime() - due.getTime()) / 86_400_000);
+  return Math.max(0, diff);
+}
+
+export type InterestCycleRow = {
+  id: string;
+  dueDate: string | Date;
+  expectedInterest: number;
+  paidInterest: number;
+  remaining: number;
+  /** Días de mora SOLO de este corte (0 el día del corte o si ya está pagado). */
+  daysLate: number;
+  status: 'paid' | 'due_today' | 'overdue';
+  statusLabel: string;
+};
+
+/**
+ * Historial de cortes según frecuencia, solo hasta hoy (no genera el día/mes futuro).
+ * Cada fila es independiente: los días de mora no se suman entre cortes.
+ */
+export function buildInterestCycleHistory(
+  loan: {
+    installments?: Array<{
+      id?: string;
+      dueDate?: string | Date;
+      expectedInterest?: number;
+      paidInterest?: number;
+      status?: string;
+    }>;
+  },
+  asOf: Date = new Date(),
+): InterestCycleRow[] {
+  const today = parseDateOnly(asOf);
+  return (loan.installments ?? [])
+    .map((item, index) => {
+      if (!item.dueDate) return null;
+      if (item.status === 'paid' || item.status === 'waived') {
+        // se incluyen abajo si due <= today
+      } else if (item.status && !['pending', 'partial', 'overdue', 'paid'].includes(item.status)) {
+        return null;
+      }
+
+      const due = parseDateOnly(item.dueDate);
+      // Aún no llega ese corte (ej. mañana en cobro diario) → no aparece.
+      if (due.getTime() > today.getTime()) return null;
+
+      const expectedInterest = Math.round(Number(item.expectedInterest ?? 0));
+      const paidInterest = Math.round(Number(item.paidInterest ?? 0));
+      const remaining = Math.max(0, expectedInterest - paidInterest);
+      const calendarLate = daysLateForDueDate(due, today);
+
+      let status: InterestCycleRow['status'];
+      let statusLabel: string;
+      let daysLate = 0;
+
+      if (remaining <= 0) {
+        status = 'paid';
+        statusLabel = 'Al día';
+        daysLate = 0;
+      } else if (calendarLate > 0) {
+        status = 'overdue';
+        statusLabel = 'En mora';
+        daysLate = calendarLate;
+      } else {
+        // due === today: el corte llegó, pero el día aún no cuenta como mora.
+        status = 'due_today';
+        statusLabel = 'En curso';
+        daysLate = 0;
+      }
+
+      return {
+        id: item.id ?? `cycle-${index}`,
+        dueDate: item.dueDate,
+        expectedInterest,
+        paidInterest,
+        remaining,
+        daysLate,
+        status,
+        statusLabel,
+      };
+    })
+    .filter((row): row is InterestCycleRow => row != null)
+    .sort((a, b) => parseDateOnly(a.dueDate).getTime() - parseDateOnly(b.dueDate).getTime());
+}
+
+/** @deprecated Usar buildInterestCycleHistory */
+export function buildOpenInterestCycles(
+  loan: Parameters<typeof buildInterestCycleHistory>[0],
+  asOf?: Date,
+) {
+  return buildInterestCycleHistory(loan, asOf).filter((row) => row.remaining > 0);
 }
 
 export function formatDate(value?: string | Date | null) {

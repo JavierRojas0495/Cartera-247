@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
-import { login, logout, getUser, isAuthenticated, api, formatCop, formatInterestRate, formatDailyLateRate, estimatePeriodInterest, formatPaymentFrequency, loanPendingInterest, type PaymentFrequency } from './api';
+import { login, logout, getUser, isAuthenticated, api, formatCop, formatLoanCode, formatInterestRate, formatDailyLateRate, estimatePeriodInterest, formatPaymentFrequency, loanPendingInterest, loanCollectionStatus, type PaymentFrequency } from './api';
 import { BorrowerFormPanel } from './BorrowerFormPanel';
 import { useAppDialog, borrowerDeactivateBlockedContent } from './app-dialog';
 import { LoanDetailView } from './LoanDetailView';
@@ -8,6 +8,7 @@ import { BorrowerDetailView, primaryBorrowerPhone } from './BorrowerDetailView';
 import { getLogoutMessage } from './session';
 import { useSessionTimeout } from './useSessionTimeout';
 import { SessionTimeoutModal } from './SessionTimeoutModal';
+import { DashboardContent } from './DashboardPage';
 
 function SessionGuard({ children }: { children: React.ReactNode }) {
   const { showWarning, countdown, continueSession } = useSessionTimeout();
@@ -198,38 +199,9 @@ function Layout({ children }: { children: React.ReactNode }) {
 }
 
 function DashboardPage() {
-  const [summary, setSummary] = useState<any>(null);
-  const [alerts, setAlerts] = useState<any[]>([]);
-  useEffect(() => {
-    api<any>('/reports/portfolio').then(setSummary).catch(console.error);
-    api<any[]>('/overdue/alerts').then(setAlerts).catch(console.error);
-  }, []);
-
   return (
     <Layout>
-      <div className="header"><h1>Inicio</h1></div>
-      {summary && (
-        <div className="stats">
-          <div className="stat"><div className="label">Cartera activa</div><div className="value">{formatCop(summary.totalOutstanding)}</div></div>
-          <div className="stat"><div className="label">Préstamos</div><div className="value">{summary.activeLoansCount}</div></div>
-          <div className="stat"><div className="label">Prestatarios</div><div className="value">{summary.activeBorrowers}</div></div>
-          <div className="stat"><div className="label">En mora</div><div className="value">{summary.overdueInstallments}</div></div>
-          <div className="stat"><div className="label">Cobrado</div><div className="value">{formatCop(summary.totalCollected)}</div></div>
-        </div>
-      )}
-      {alerts.length > 0 && (
-        <div className="card">
-          <h3>Alertas recientes</h3>
-          <div className="alert-list">
-            {alerts.slice(0, 5).map((a) => (
-              <div key={a.id} className="alert-item">
-                <strong>{a.title}</strong>
-                <p>{a.message}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <DashboardContent />
     </Layout>
   );
 }
@@ -515,29 +487,33 @@ function BorrowersPage() {
   );
 }
 
-function loanStatusLabel(status: string) {
-  if (status === 'active') return 'Activo';
-  if (status === 'paid_off') return 'Saldado';
-  if (status === 'defaulted') return 'En incumplimiento';
-  if (status === 'cancelled') return 'Cancelado';
-  return status;
-}
-
 function LoansPage() {
-  type ViewMode = 'list' | 'view';
+  type ViewMode = 'list' | 'view' | 'edit';
+  type ListScope = 'active' | 'paid_off';
 
+  const { alert } = useAppDialog();
   const [loans, setLoans] = useState<any[]>([]);
   const [borrowers, setBorrowers] = useState<any[]>([]);
+  const [listScope, setListScope] = useState<ListScope>('active');
   const [showForm, setShowForm] = useState(false);
   const [view, setView] = useState<ViewMode>('list');
   const [selectedLoan, setSelectedLoan] = useState<any | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
   const [form, setForm] = useState({
     borrowerId: '',
     principalAmount: 1000000,
     startDate: new Date().toISOString().split('T')[0],
     interestRatePercent: 3 as number | '',
     paymentFrequency: 'monthly' as PaymentFrequency,
+  });
+  const [editForm, setEditForm] = useState({
+    principalAmount: 1000000,
+    startDate: '',
+    interestRatePercent: 3 as number | '',
+    paymentFrequency: 'monthly' as PaymentFrequency,
+    confirmPassword: '',
   });
 
   const effectiveFrequency = form.paymentFrequency;
@@ -569,10 +545,43 @@ function LoansPage() {
     }
   };
 
+  const openEdit = async (id: string) => {
+    setView('edit');
+    setLoadingDetail(true);
+    setEditError('');
+    try {
+      const detail = await api<any>(`/loans/${id}`);
+      if (detail.status !== 'active') {
+        await alert({
+          title: 'No se puede modificar',
+          message: 'Solo los créditos activos se pueden editar.',
+        });
+        setView('list');
+        setSelectedLoan(null);
+        return;
+      }
+      setSelectedLoan(detail);
+      setEditForm({
+        principalAmount: Number(detail.principalAmount) || 0,
+        startDate: new Date(detail.startDate).toISOString().slice(0, 10),
+        interestRatePercent: Math.round(Number(detail.interestRate) * 10000) / 100,
+        paymentFrequency: (detail.paymentFrequency || 'monthly') as PaymentFrequency,
+        confirmPassword: '',
+      });
+    } catch (err) {
+      console.error(err);
+      setView('list');
+      setSelectedLoan(null);
+    } finally {
+      setLoadingDetail(false);
+    }
+  };
+
   const backToList = () => {
     setView('list');
     setSelectedLoan(null);
     setShowForm(false);
+    setEditError('');
   };
 
   const create = async (e: React.FormEvent) => {
@@ -599,23 +608,189 @@ function LoansPage() {
     setLoans(await api<any[]>('/loans'));
   };
 
+  const saveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedLoan || editForm.interestRatePercent === '') return;
+    if (!editForm.confirmPassword.trim()) {
+      setEditError('Ingresa tu contraseña para confirmar la modificación.');
+      return;
+    }
+    setSavingEdit(true);
+    setEditError('');
+    try {
+      const updated = await api<any>(`/loans/${selectedLoan.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          principalAmount: Number(editForm.principalAmount),
+          startDate: editForm.startDate,
+          paymentFrequency: editForm.paymentFrequency,
+          interestRate: Number(editForm.interestRatePercent) / 100,
+          confirmPassword: editForm.confirmPassword,
+        }),
+      });
+      setSelectedLoan(updated);
+      setView('view');
+      setEditForm((prev) => ({ ...prev, confirmPassword: '' }));
+      await alert({
+        title: 'Crédito actualizado',
+        message: 'Los cambios quedaron guardados y el interés pendiente se recalculó.',
+      });
+    } catch (err: any) {
+      setEditError(err?.message || 'No se pudo guardar el crédito.');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const editBalancePreview = selectedLoan
+    ? Math.max(
+        0,
+        Number(selectedLoan.currentBalance) +
+          (Number(editForm.principalAmount) - Number(selectedLoan.principalAmount)),
+      )
+    : 0;
+
+  const editEstimatedInterest =
+    editForm.interestRatePercent !== ''
+      ? estimatePeriodInterest(
+          editBalancePreview,
+          Number(editForm.interestRatePercent) / 100,
+          editForm.paymentFrequency,
+        )
+      : null;
+
+  const activeLoans = loans.filter((l) => l.status === 'active');
+  const paidOffLoans = loans.filter((l) => l.status === 'paid_off');
+  const visibleLoans = listScope === 'active' ? activeLoans : paidOffLoans;
+
   return (
     <Layout>
       <div className="header">
-        <h1>{view === 'view' ? 'Detalle del crédito' : 'Préstamos'}</h1>
+        <h1>
+          {view === 'view' ? 'Detalle del crédito' : view === 'edit' ? 'Modificar crédito' : 'Préstamos'}
+        </h1>
         {view === 'list' ? (
           <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>+ Nuevo préstamo</button>
         ) : (
-          <button className="btn btn-secondary" onClick={backToList}>← Volver al listado</button>
+          <div className="header-actions">
+            {view === 'view' && selectedLoan?.status === 'active' && (
+              <button className="btn btn-secondary" type="button" onClick={() => openEdit(selectedLoan.id)}>
+                Modificar
+              </button>
+            )}
+            <button className="btn btn-secondary" onClick={backToList}>← Volver al listado</button>
+          </div>
         )}
       </div>
 
-      {view === 'view' && loadingDetail && (
+      {(view === 'view' || view === 'edit') && loadingDetail && (
         <div className="card"><p>Cargando historial del crédito...</p></div>
       )}
 
       {view === 'view' && selectedLoan && !loadingDetail && (
         <LoanDetailView loan={selectedLoan} />
+      )}
+
+      {view === 'edit' && selectedLoan && !loadingDetail && (
+        <div className="card">
+          <p className="form-note" style={{ marginBottom: '1rem' }}>
+            Editando crédito de <strong>{selectedLoan.borrower?.firstName} {selectedLoan.borrower?.lastName}</strong>.
+            Si cambias el valor prestado, <strong>Por cobrar</strong> se ajusta en la misma diferencia (se conservan los abonos a capital ya hechos).
+          </p>
+          <form onSubmit={saveEdit}>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Valor prestado (COP)</label>
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  step={1}
+                  value={editForm.principalAmount}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, principalAmount: Number(e.target.value) })
+                  }
+                />
+                <p className="loan-stat-hint" style={{ marginTop: '0.35rem' }}>
+                  Por cobrar quedaría en {formatCop(editBalancePreview)}
+                </p>
+              </div>
+              <div className="form-group">
+                <label>Fecha de desembolso</label>
+                <input
+                  type="date"
+                  required
+                  value={editForm.startDate}
+                  onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
+                />
+              </div>
+              <div className="form-group">
+                <label>Tasa del ciclo (%)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  required
+                  value={editForm.interestRatePercent}
+                  onChange={(e) =>
+                    setEditForm({
+                      ...editForm,
+                      interestRatePercent: e.target.value === '' ? '' : Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <div className="form-group">
+                <label>Frecuencia de cobro</label>
+                <select
+                  value={editForm.paymentFrequency}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, paymentFrequency: e.target.value as PaymentFrequency })
+                  }
+                >
+                  <option value="daily">Diario</option>
+                  <option value="weekly">Semanal</option>
+                  <option value="biweekly">Cada 15 días</option>
+                  <option value="monthly">Mensual</option>
+                </select>
+              </div>
+            </div>
+            {editEstimatedInterest != null && (
+              <p className="loan-interest-preview-meta" style={{ marginBottom: '1rem' }}>
+                Interés estimado por ciclo con el saldo actual:{' '}
+                <strong>{formatCop(editEstimatedInterest)}</strong>
+              </p>
+            )}
+            <div className="form-group" style={{ maxWidth: 360 }}>
+              <label>Tu contraseña (obligatoria)</label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={editForm.confirmPassword}
+                onChange={(e) => setEditForm({ ...editForm, confirmPassword: e.target.value })}
+                placeholder="Confirma para guardar"
+              />
+            </div>
+            {editError && <div className="error" style={{ marginBottom: '0.75rem' }}>{editError}</div>}
+            <div className="header-actions">
+              <button className="btn btn-primary" type="submit" disabled={savingEdit}>
+                {savingEdit ? 'Guardando...' : 'Guardar cambios'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={savingEdit}
+                onClick={() => {
+                  setView('view');
+                  setEditError('');
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {view === 'list' && showForm && (
@@ -697,49 +872,106 @@ function LoansPage() {
       )}
 
       {view === 'list' && (
+      <>
+      <div className="list-scope" role="tablist" aria-label="Alcance del listado">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={listScope === 'active'}
+          className={`list-scope-btn${listScope === 'active' ? ' is-active' : ''}`}
+          onClick={() => setListScope('active')}
+        >
+          En cartera
+          <span className="list-scope-count">{activeLoans.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={listScope === 'paid_off'}
+          className={`list-scope-btn${listScope === 'paid_off' ? ' is-active' : ''}`}
+          onClick={() => setListScope('paid_off')}
+        >
+          Saldados
+          <span className="list-scope-count">{paidOffLoans.length}</span>
+        </button>
+      </div>
       <div className="card table-scroll">
         <table className="loans-table responsive-table">
           <thead>
             <tr>
+              <th>ID crédito</th>
               <th>Prestatario</th>
               <th title="Dinero entregado al prestatario">Prestado</th>
-              <th title="Capital que aún debe el prestatario">Por cobrar</th>
               <th>Tasa</th>
               <th>Cobro</th>
-              <th>Interés pendiente</th>
-              <th>Estado</th>
-              <th>Desembolso</th>
+              {listScope === 'active' ? (
+                <>
+                  <th>Interés pendiente</th>
+                  <th title="Si el crédito tiene cortes vencidos sin pagar">Cobranza</th>
+                  <th>Desembolso</th>
+                </>
+              ) : (
+                <>
+                  <th>Desembolso</th>
+                  <th>Saldado</th>
+                </>
+              )}
               <th>Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {loans.length === 0 ? (
+            {visibleLoans.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ textAlign: 'center', color: 'var(--muted)', padding: '2rem' }}>
-                  No hay préstamos registrados.
+                <td colSpan={listScope === 'active' ? 9 : 8} style={{ textAlign: 'center', color: 'var(--muted)', padding: '2rem' }}>
+                  {listScope === 'active'
+                    ? 'No hay créditos en cartera.'
+                    : 'Aún no hay créditos saldados.'}
                 </td>
               </tr>
-            ) : loans.map((l) => {
+            ) : visibleLoans.map((l) => {
               const pendingInterest = loanPendingInterest(l);
+              const collection = loanCollectionStatus(l);
               return (
                 <tr key={l.id}>
+                  <td data-label="ID crédito">
+                    <code className="loan-code">{formatLoanCode(l)}</code>
+                  </td>
                   <td data-label="Prestatario">{l.borrower?.firstName} {l.borrower?.lastName}</td>
                   <td data-label="Prestado">{formatCop(l.principalAmount)}</td>
-                  <td data-label="Por cobrar">{formatCop(l.currentBalance)}</td>
                   <td data-label="Tasa">{formatInterestRate(l.interestRate, l.paymentFrequency)}</td>
                   <td data-label="Cobro">{formatPaymentFrequency(l.paymentFrequency)}</td>
-                  <td data-label="Interés pend.">
-                    <span className={pendingInterest > 0 ? 'loan-interest-due' : 'loan-interest-paid'}>
-                      {formatCop(pendingInterest)}
-                    </span>
-                  </td>
-                  <td data-label="Estado"><span className={`badge badge-${l.status === 'active' || l.status === 'paid_off' ? 'active' : 'inactive'}`}>{loanStatusLabel(l.status)}</span></td>
-                  <td data-label="Desembolso">{new Date(l.startDate).toLocaleDateString('es-CO')}</td>
+                  {listScope === 'active' ? (
+                    <>
+                      <td data-label="Interés pend.">
+                        <span className={pendingInterest > 0 ? 'loan-interest-due' : 'loan-interest-paid'}>
+                          {formatCop(pendingInterest)}
+                        </span>
+                      </td>
+                      <td data-label="Cobranza">
+                        <span className={`badge badge-${collection.badge}`}>{collection.label}</span>
+                      </td>
+                      <td data-label="Desembolso">{new Date(l.startDate).toLocaleDateString('es-CO')}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td data-label="Desembolso">{new Date(l.startDate).toLocaleDateString('es-CO')}</td>
+                      <td data-label="Saldado">
+                        {l.endDate
+                          ? new Date(l.endDate).toLocaleDateString('es-CO')
+                          : '—'}
+                      </td>
+                    </>
+                  )}
                   <td data-label="Acciones">
                     <div className="table-actions">
                       <button type="button" className="btn btn-primary" onClick={() => openView(l.id)}>
                         Ver
                       </button>
+                      {l.status === 'active' && (
+                        <button type="button" className="btn btn-secondary" onClick={() => openEdit(l.id)}>
+                          Modificar
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -748,6 +980,7 @@ function LoansPage() {
           </tbody>
         </table>
       </div>
+      </>
       )}
     </Layout>
   );
@@ -928,13 +1161,18 @@ function PaymentsPage() {
               }}>
                 <option value="">Seleccionar...</option>
                 {loans.filter((l) => l.status === 'active').map((l) => (
-                  <option key={l.id} value={l.id}>{l.borrower?.firstName} {l.borrower?.lastName} — {formatCop(l.currentBalance)}</option>
+                  <option key={l.id} value={l.id}>
+                    {formatLoanCode(l)} — {l.borrower?.firstName} {l.borrower?.lastName} — {formatCop(l.currentBalance)}
+                  </option>
                 ))}
               </select>
             </div>
             {debtSummary && (
               <div className="payment-debt-box">
-                <strong>Estado de deuda — {debtSummary.borrowerName}</strong>
+                <strong>
+                  Estado de deuda — {debtSummary.loanCode ? `${debtSummary.loanCode} · ` : ''}
+                  {debtSummary.borrowerName}
+                </strong>
                 <div className="payment-debt-grid">
                   <div>Por cobrar:</div><div><strong>{formatCop(debtSummary.principalBalance)}</strong></div>
                   <div>Interés pendiente:</div><div><strong>{formatCop(debtSummary.pendingInterest)}</strong></div>
@@ -1054,13 +1292,27 @@ function PaymentsPage() {
       )}
       <div className="card table-scroll">
         <table className="responsive-table">
-          <thead><tr><th>Fecha</th><th>Prestatario</th><th>Pagó</th><th>Interés</th><th>Capital</th><th>Saldo después</th><th>Estado</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>ID crédito</th>
+              <th>Prestatario</th>
+              <th>Pagó</th>
+              <th>Interés</th>
+              <th>Capital</th>
+              <th>Saldo después</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
           <tbody>
             {payments.map((p) => {
               const alloc = p.allocations?.[0];
               return (
               <tr key={p.id}>
                 <td data-label="Fecha">{new Date(p.paymentDate).toLocaleDateString('es-CO')}</td>
+                <td data-label="ID crédito">
+                  <code className="loan-code">{formatLoanCode(p.loan)}</code>
+                </td>
                 <td data-label="Prestatario">{p.loan?.borrower?.firstName} {p.loan?.borrower?.lastName}</td>
                 <td data-label="Pagó">{formatCop(p.amount)}</td>
                 <td data-label="Interés">{formatCop(alloc?.toInterest ?? 0)}</td>
@@ -1097,10 +1349,11 @@ function OverduePage() {
       <div className="header"><h1>Mora</h1></div>
       <div className="card table-scroll">
         <table className="responsive-table">
-          <thead><tr><th>Prestatario</th><th>Ciclo</th><th>Días mora</th><th>Mora calculada</th><th>Estado</th><th>Acciones</th></tr></thead>
+          <thead><tr><th>ID crédito</th><th>Prestatario</th><th>Ciclo</th><th>Días mora</th><th>Mora calculada</th><th>Estado</th><th>Acciones</th></tr></thead>
           <tbody>
             {events.map((e) => (
               <tr key={e.id}>
+                <td data-label="ID crédito"><code className="loan-code">{formatLoanCode(e.installment?.loan)}</code></td>
                 <td data-label="Prestatario">{e.installment?.loan?.borrower?.firstName} {e.installment?.loan?.borrower?.lastName}</td>
                 <td data-label="Ciclo">#{e.installment?.installmentNumber}</td>
                 <td data-label="Días">{e.daysOverdue}</td>

@@ -36,3 +36,32 @@ export class CreateLoanDto {
   @IsDateString()
   startDate: string;
 }
+
+export class UpdateLoanDto {
+  @ApiProperty({ description: 'Contraseña del usuario para autorizar la modificación' })
+  @IsString()
+  @IsNotEmpty()
+  confirmPassword: string;
+
+  @ApiPropertyOptional({ description: 'Valor prestado (desembolso). Ajusta Por cobrar en la misma diferencia.' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  principalAmount?: number;
+
+  @ApiPropertyOptional({ description: 'Tasa del ciclo de cobro en decimal (ej. 0.03 = 3%).' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  interestRate?: number;
+
+  @ApiPropertyOptional({ enum: PaymentFrequency })
+  @IsOptional()
+  @IsEnum(PaymentFrequency)
+  paymentFrequency?: PaymentFrequency;
+
+  @ApiPropertyOptional({ description: 'Fecha de desembolso' })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+}

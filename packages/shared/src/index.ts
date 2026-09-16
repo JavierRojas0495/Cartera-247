@@ -62,8 +62,14 @@ export interface PaymentAllocation {
 export interface PortfolioSummary {
   activeLoansCount: number;
   totalOutstanding: number;
+  totalPrincipal?: number;
   activeBorrowers: number;
+  /** Créditos activos en mora (KPI). */
+  overdueLoans: number;
+  /** Ciclos internos vencidos; no usar como KPI de UI. */
   overdueInstallments: number;
+  /** Suma de interés pendiente (todos los ciclos abiertos). */
+  totalPendingInterest?: number;
   totalCollected: number;
 }
 

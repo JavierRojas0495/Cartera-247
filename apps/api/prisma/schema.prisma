@@ -443,6 +443,8 @@ model Loan {
   tenantId         String     @map("tenant_id")
   borrowerId       String     @map("borrower_id")
   productId        String     @map("product_id")
+  /** Código visible del crédito (ej. CR-260915-A7K2). */
+  code             String     @default("") @map("code")
   principalAmount  Int        @map("principal_amount")
   currentBalance   Int        @map("current_balance")
   interestRate     Decimal    @map("interest_rate")
@@ -461,6 +463,7 @@ model Loan {
   balanceEvents LoanBalanceEvent[]
   payments     Payment[]
 
+  @@index([tenantId, code])
   @@index([tenantId, status])
   @@index([borrowerId])
   @@map("loans")

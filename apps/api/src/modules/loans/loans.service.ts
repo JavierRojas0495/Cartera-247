@@ -1,15 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InstallmentStatus } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.module';
 
 import { AuditService } from '../audit/audit.service';
+import { AuthService } from '../auth/auth.service';
 
 import { InstallmentSchedulerService } from './installment-scheduler.service';
 
-import { CreateLoanDto } from './dto/loan.dto';
+import { CreateLoanDto, UpdateLoanDto } from './dto/loan.dto';
 import { LoanDebtSummary } from './loan-debt.types';
-import { calculateLateFee } from '../../common/utils/money.util';
+import { calculateLateFee, calculatePeriodInterest } from '../../common/utils/money.util';
 import {
   chargeableLateDays,
   daysOverdue,
@@ -17,6 +18,7 @@ import {
   lateFeeRulesFromJson,
   parseDateOnly,
 } from '../../common/utils/loan-cycle.util';
+import { generateLoanCode } from '../../common/utils/loan-code.util';
 
 @Injectable()
 export class LoansService {
@@ -27,9 +29,37 @@ export class LoansService {
 
     private audit: AuditService,
 
+    private auth: AuthService,
+
     private installments: InstallmentSchedulerService,
 
   ) {}
+
+  private async allocateLoanCode(tenantId: string, db: any = this.prisma): Promise<string> {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const code = generateLoanCode();
+      const exists = await db.loan.findFirst({
+        where: { tenantId, code },
+        select: { id: true },
+      });
+      if (!exists) return code;
+    }
+    return `${generateLoanCode()}${Date.now().toString(36).slice(-2).toUpperCase()}`;
+  }
+
+  /** Asigna código visible a créditos que aún no lo tengan (vacío o placeholder). */
+  async ensureLoanCodes(tenantId: string) {
+    const loans = await this.prisma.loan.findMany({
+      where: { tenantId },
+      select: { id: true, code: true },
+    });
+    for (const loan of loans) {
+      const current = (loan.code || '').trim();
+      if (current) continue;
+      const code = await this.allocateLoanCode(tenantId);
+      await this.prisma.loan.update({ where: { id: loan.id }, data: { code } });
+    }
+  }
 
 
 
@@ -44,7 +74,6 @@ export class LoansService {
       },
     },
     orderBy: { dueDate: 'asc' as const },
-    take: 1,
     select: {
       installmentNumber: true,
       dueDate: true,
@@ -54,8 +83,18 @@ export class LoansService {
     },
   };
 
-  findAll(tenantId: string) {
-    return this.prisma.loan.findMany({
+  async findAll(tenantId: string) {
+    await this.ensureLoanCodes(tenantId);
+
+    const activeIds = await this.prisma.loan.findMany({
+      where: { tenantId, status: 'active', currentBalance: { gt: 0 } },
+      select: { id: true },
+    });
+    for (const loan of activeIds) {
+      await this.installments.ensureAccruedInstallments(loan.id, new Date());
+    }
+
+    const loans = await this.prisma.loan.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
       include: {
@@ -64,11 +103,21 @@ export class LoansService {
         installments: this.openInstallmentInclude,
       },
     });
+
+    return loans.map((loan) => ({
+      ...loan,
+      pendingInterest: loan.installments.reduce(
+        (sum, item) => sum + Math.max(0, item.expectedInterest - item.paidInterest),
+        0,
+      ),
+    }));
   }
 
 
 
   async findOne(tenantId: string, id: string) {
+    await this.installments.ensureAccruedInstallments(id, new Date());
+
     const loan = await this.prisma.loan.findFirst({
       where: { id, tenantId },
       include: {
@@ -102,7 +151,45 @@ export class LoansService {
     });
 
     if (!loan) throw new NotFoundException('Préstamo no encontrado');
-    return loan;
+
+    const pendingInterest = loan.installments
+      .filter((item) => ['pending', 'partial', 'overdue'].includes(item.status))
+      .reduce((sum, item) => sum + Math.max(0, item.expectedInterest - item.paidInterest), 0);
+
+    const changeLogs = await this.audit.findByEntity(tenantId, 'loan', id, 100);
+    const changeHistory = changeLogs
+      .filter((log) => log.action === 'update')
+      .map((log) => {
+        const oldValues = (log.oldValues ?? {}) as Record<string, unknown>;
+        const newValues = (log.newValues ?? {}) as Record<string, unknown>;
+        const keys = Array.from(
+          new Set([...Object.keys(oldValues), ...Object.keys(newValues)]),
+        ).filter((key) => key !== 'confirmPassword');
+
+        const changes = keys
+          .filter((key) => JSON.stringify(oldValues[key]) !== JSON.stringify(newValues[key]))
+          .map((key) => ({
+            field: key,
+            previousValue: oldValues[key] ?? null,
+            newValue: newValues[key] ?? null,
+          }));
+
+        return {
+          id: log.id,
+          action: log.action,
+          createdAt: log.createdAt,
+          user: log.user
+            ? {
+                name: `${log.user.firstName} ${log.user.lastName}`.trim(),
+                email: log.user.email,
+              }
+            : null,
+          changes,
+        };
+      })
+      .filter((entry) => entry.changes.length > 0);
+
+    return { ...loan, pendingInterest, changeHistory };
   }
 
 
@@ -134,14 +221,16 @@ export class LoansService {
 
     const rate = dto.interestRate;
     const paymentFrequency = dto.paymentFrequency;
-    const startDate = new Date(dto.startDate);
+    const startDate = parseDateOnly(dto.startDate);
 
     const loan = await this.prisma.$transaction(async (tx) => {
+      const code = await this.allocateLoanCode(tenantId, tx);
       const newLoan = await tx.loan.create({
         data: {
           tenantId,
           borrowerId: dto.borrowerId,
           productId: product.id,
+          code,
           principalAmount: dto.principalAmount,
           currentBalance: dto.principalAmount,
           interestRate: rate,
@@ -175,13 +264,9 @@ export class LoansService {
       return newLoan;
     });
 
-    await this.installments.createFirstInstallment(
-      loan.id,
-      startDate,
-      dto.principalAmount,
-      rate,
-      paymentFrequency,
-    );
+    // Si el desembolso es anterior a hoy, abre todos los ciclos que ya aplican
+    // y genera alertas de interés por cobrar / atraso.
+    await this.installments.ensureAccruedInstallmentsAndAlerts(loan.id, new Date());
 
 
 
@@ -197,7 +282,7 @@ export class LoansService {
 
       action: 'create',
 
-      newValues: dto as any,
+      newValues: { ...(dto as any), code: loan.code },
 
       ipAddress: ip,
 
@@ -207,6 +292,130 @@ export class LoansService {
 
     return this.findOne(tenantId, loan.id);
 
+  }
+
+  async update(tenantId: string, id: string, dto: UpdateLoanDto, userId: string, ip?: string) {
+    const loan = await this.prisma.loan.findFirst({
+      where: { id, tenantId },
+      include: {
+        term: true,
+        installments: { orderBy: { installmentNumber: 'asc' } },
+      },
+    });
+    if (!loan) throw new NotFoundException('Préstamo no encontrado');
+    if (loan.status !== 'active') {
+      throw new BadRequestException('Solo se pueden modificar créditos activos.');
+    }
+
+    await this.auth.verifyPassword(userId, dto.confirmPassword);
+
+    const nextRate = dto.interestRate ?? Number(loan.interestRate);
+    const nextFrequency = dto.paymentFrequency ?? loan.paymentFrequency;
+    const nextStart = dto.startDate ? parseDateOnly(dto.startDate) : parseDateOnly(loan.startDate);
+    const nextPrincipal = dto.principalAmount ?? loan.principalAmount;
+    const principalDelta = nextPrincipal - loan.principalAmount;
+    const nextBalance = loan.currentBalance + principalDelta;
+
+    if (nextBalance < 0) {
+      throw new BadRequestException(
+        'El nuevo valor prestado dejaría Por cobrar en negativo. Revisa abonos a capital o el monto.',
+      );
+    }
+
+    const rateChanged = dto.interestRate != null && Number(dto.interestRate) !== Number(loan.interestRate);
+    const frequencyChanged = dto.paymentFrequency != null && dto.paymentFrequency !== loan.paymentFrequency;
+    const startChanged =
+      dto.startDate != null &&
+      parseDateOnly(dto.startDate).getTime() !== parseDateOnly(loan.startDate).getTime();
+    const principalChanged = dto.principalAmount != null && dto.principalAmount !== loan.principalAmount;
+
+    if (!rateChanged && !frequencyChanged && !startChanged && !principalChanged) {
+      throw new BadRequestException('No hay cambios para guardar.');
+    }
+
+    const oldValues = {
+      principalAmount: loan.principalAmount,
+      currentBalance: loan.currentBalance,
+      interestRate: Number(loan.interestRate),
+      paymentFrequency: loan.paymentFrequency,
+      startDate: parseDateOnly(loan.startDate).toISOString().slice(0, 10),
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.loan.update({
+        where: { id: loan.id },
+        data: {
+          principalAmount: nextPrincipal,
+          currentBalance: nextBalance,
+          interestRate: nextRate,
+          paymentFrequency: nextFrequency,
+          startDate: nextStart,
+        },
+      });
+
+      if (loan.term) {
+        await tx.loanTerm.update({
+          where: { id: loan.term.id },
+          data: {
+            principalAmount: nextPrincipal,
+            interestRate: nextRate,
+            paymentFrequency: nextFrequency,
+          },
+        });
+      }
+
+      if (principalChanged && principalDelta !== 0) {
+        await tx.loanBalanceEvent.create({
+          data: {
+            loanId: loan.id,
+            eventType: principalDelta > 0 ? 'principal_increase' : 'principal_decrease',
+            amount: Math.abs(principalDelta),
+            balanceAfter: nextBalance,
+            description:
+              principalDelta > 0
+                ? `Ajuste de prestado (+${principalDelta.toLocaleString('es-CO')})`
+                : `Ajuste de prestado (${principalDelta.toLocaleString('es-CO')})`,
+          },
+        });
+      }
+
+      if (rateChanged || principalChanged) {
+        const open = await tx.loanInstallment.findMany({
+          where: {
+            loanId: loan.id,
+            status: { in: ['pending', 'partial', 'overdue'] },
+          },
+        });
+        for (const installment of open) {
+          const newExpected = calculatePeriodInterest(nextBalance, nextRate, nextFrequency);
+          await tx.loanInstallment.update({
+            where: { id: installment.id },
+            data: { expectedInterest: Math.max(newExpected, installment.paidInterest) },
+          });
+        }
+      }
+    });
+
+    await this.installments.ensureAccruedInstallmentsAndAlerts(loan.id, new Date());
+
+    await this.audit.log({
+      tenantId,
+      userId,
+      entityType: 'loan',
+      entityId: loan.id,
+      action: 'update',
+      oldValues,
+      newValues: {
+        principalAmount: nextPrincipal,
+        currentBalance: nextBalance,
+        interestRate: nextRate,
+        paymentFrequency: nextFrequency,
+        startDate: nextStart.toISOString().slice(0, 10),
+      },
+      ipAddress: ip,
+    });
+
+    return this.findOne(tenantId, loan.id);
   }
 
   async lastMoraSettledThrough(loanId: string) {
@@ -223,27 +432,23 @@ export class LoansService {
   }
 
   getBorrowerLoans(tenantId: string, borrowerId: string) {
-
     return this.prisma.loan.findMany({
-
       where: { tenantId, borrowerId },
-
       include: {
-
         installments: {
-
           where: { status: { in: ['pending', 'partial', 'overdue'] } },
-
           orderBy: { dueDate: 'asc' },
-
-          take: 5,
-
         },
-
       },
-
-    });
-
+    }).then((loans) =>
+      loans.map((loan) => ({
+        ...loan,
+        pendingInterest: loan.installments.reduce(
+          (sum, item) => sum + Math.max(0, item.expectedInterest - item.paidInterest),
+          0,
+        ),
+      })),
+    );
   }
 
   async getDebtSummary(tenantId: string, loanId: string, asOf?: string): Promise<LoanDebtSummary> {
@@ -306,6 +511,7 @@ export class LoansService {
 
     return {
       loanId: loan.id,
+      loanCode: loan.code || loan.id.slice(0, 8).toUpperCase(),
       borrowerName: `${loan.borrower.firstName} ${loan.borrower.lastName}`,
       principalBalance,
       pendingInterest,

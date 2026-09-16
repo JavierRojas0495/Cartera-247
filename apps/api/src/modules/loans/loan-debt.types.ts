@@ -1,5 +1,6 @@
 export interface LoanDebtSummary {
   loanId: string;
+  loanCode: string;
   borrowerName: string;
   principalBalance: number;
   pendingInterest: number;

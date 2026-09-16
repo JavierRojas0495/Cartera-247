@@ -284,6 +284,7 @@ async function main() {
       tenantId: tenant.id,
       borrowerId: borrower.id,
       productId: product.id,
+      code: 'CR-DEMO-0001',
       principalAmount: 1000000,
       currentBalance: 1000000,
       interestRate: 0.03,
@@ -291,7 +292,7 @@ async function main() {
       startDate,
       endDate: null,
     },
-    update: { endDate: null },
+    update: { endDate: null, code: 'CR-DEMO-0001' },
   });
 
   await prisma.loanTerm.upsert({
