@@ -1,4 +1,11 @@
-export const API_URL = 'http://localhost:3000/api/v1';
+/** Acepta `https://api…` o `https://api…/api/v1`. En local: localhost:3000. */
+function resolveApiUrl() {
+  const raw = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
+  const base = (raw || 'http://localhost:3000').replace(/\/$/, '');
+  return base.endsWith('/api/v1') ? base : `${base}/api/v1`;
+}
+
+export const API_URL = resolveApiUrl();
 
 export async function api<T>(
   path: string,

@@ -8,6 +8,7 @@ build/
 coverage/
 .turbo/
 apps/api/prisma/*.db
+apps/api/prisma/data/
 apps/mobile/.dart_tool/
 apps/mobile/build/
 apps/mobile/.flutter-plugins

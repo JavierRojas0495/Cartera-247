@@ -15,8 +15,25 @@ async function bootstrap() {
     }),
   );
 
+  const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:5174')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: ['http://localhost:5173', 'http://localhost:5174'],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (corsOrigins.includes('*') || corsOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      try {
+        const host = new URL(origin).hostname;
+        if (host.endsWith('.onrender.com')) return callback(null, true);
+      } catch {
+        /* ignore */
+      }
+      return callback(new Error(`CORS bloqueado: ${origin}`), false);
+    },
     credentials: true,
   });
 

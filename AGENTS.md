@@ -26,6 +26,8 @@ npm run dev:api          # :3000
 npm run dev:web-tenant   # :5174
 ```
 
+Demo en Render (API + front gratis): `docs/DEPLOY-RENDER.md`.
+
 Demo prestamista: `dueno@demo.com` / `Demo123!`
 
 ## Reglas cortas
