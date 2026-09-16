@@ -27,9 +27,13 @@ try {
   console.warn('[render] seed omitido o con avisos:', err.message);
 }
 
-const main = path.join(root, 'dist', 'main.js');
-if (!fs.existsSync(main)) {
-  console.error('[render] No existe dist/main.js. ¿Falló el build?');
+const candidates = [
+  path.join(root, 'dist', 'main.js'),
+  path.join(root, 'dist', 'src', 'main.js'),
+];
+const main = candidates.find((file) => fs.existsSync(file));
+if (!main) {
+  console.error('[render] No se encontró dist/main.js ni dist/src/main.js. ¿Falló el build?');
   process.exit(1);
 }
 
