@@ -6,7 +6,7 @@ Plataforma SaaS multi-tenant para prestamistas en Colombia.
 
 | Capa | Tecnología |
 |---|---|
-| Backend | Node.js 20 + NestJS + Prisma |
+| Backend | Node.js 24 + NestJS + Prisma |
 | Base de datos | PostgreSQL 16+ |
 | Web admin | React + Vite |
 | Web prestamista | React + Vite |
@@ -38,7 +38,7 @@ cartera247/
 
 ### Requisitos
 
-- Node.js 20+
+- Node.js 24
 - PostgreSQL 16+
 - Flutter 3.x (para móvil)
 
